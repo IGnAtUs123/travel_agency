@@ -1,7 +1,7 @@
-import { Booking, BookingStatus, Tour, TourImage, User } from '../models.js';
+import { Booking, BookingStatus, Tour, TourImage, User } from "../models.js";
 
 const num = (v) => (v === null || v === undefined ? null : Number(v));
-const iso = (v) => (v instanceof Date ? v.toISOString() : v ?? null);
+const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? null));
 
 const USER_COLS = `u.user_id, u.role_id, u.full_name, u.email, u.phone,
   to_char(u.birth_date, 'YYYY-MM-DD') AS birth_date, u.password_hash, u.created_at`;
@@ -73,11 +73,6 @@ function mapBooking(r) {
   });
 }
 
-/**
- * Фасад базы данных: единственное место, где выполняются SQL-запросы.
- * Все запросы параметризованы ($1, $2, …), что исключает SQL-инъекции.
- * pool – объект pg.Pool (или совместимый: query() и connect()).
- */
 export class DatabaseFacade {
   constructor(pool) {
     this.pool = pool;
@@ -86,13 +81,13 @@ export class DatabaseFacade {
   async #tx(fn) {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query("BEGIN");
       const result = await fn(client);
-      await client.query('COMMIT');
+      await client.query("COMMIT");
       return result;
     } catch (e) {
       try {
-        await client.query('ROLLBACK');
+        await client.query("ROLLBACK");
       } catch {
         /* соединение уже потеряно */
       }
@@ -102,7 +97,6 @@ export class DatabaseFacade {
     }
   }
 
-  // ---------------------------------------------------------------- пользователи
   async getUserByEmail(email) {
     const { rows } = await this.pool.query(
       `SELECT ${USER_COLS} FROM users u WHERE lower(u.email) = lower($1)`,
@@ -112,7 +106,10 @@ export class DatabaseFacade {
   }
 
   async getUserById(id) {
-    const { rows } = await this.pool.query(`SELECT ${USER_COLS} FROM users u WHERE u.user_id = $1`, [id]);
+    const { rows } = await this.pool.query(
+      `SELECT ${USER_COLS} FROM users u WHERE u.user_id = $1`,
+      [id],
+    );
     return rows[0] ? mapUser(rows[0]) : null;
   }
 
@@ -120,7 +117,14 @@ export class DatabaseFacade {
     const { rows } = await this.pool.query(
       `INSERT INTO users (role_id, full_name, email, phone, birth_date, password_hash)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING user_id`,
-      [user.role, user.fullName, user.email, user.phone, user.birthDate, user.passwordHash],
+      [
+        user.role,
+        user.fullName,
+        user.email,
+        user.phone,
+        user.birthDate,
+        user.passwordHash,
+      ],
     );
     return num(rows[0].user_id);
   }
@@ -133,27 +137,26 @@ export class DatabaseFacade {
     );
   }
 
-  // ---------------------------------------------------------------- туры
   async getTours(filter) {
     const where = [];
     const params = [];
     const add = (sql, value) => {
       params.push(value);
-      where.push(sql.replace('?', `$${params.length}`));
+      where.push(sql.replace("?", `$${params.length}`));
     };
     if (filter?.search) {
-      params.push(`%${String(filter.search).replace(/[\\%_]/g, '\\$&')}%`);
+      params.push(`%${String(filter.search).replace(/[\\%_]/g, "\\$&")}%`);
       const n = params.length;
       where.push(`(t.title ILIKE $${n} OR t.description ILIKE $${n})`);
     }
-    if (filter?.difficulty) add('t.difficulty_id = ?', filter.difficulty);
-    if (filter?.season) add('t.season_id = ?', filter.season);
-    if (filter?.minDays) add('t.duration_days >= ?', filter.minDays);
-    if (filter?.maxDays) add('t.duration_days <= ?', filter.maxDays);
+    if (filter?.difficulty) add("t.difficulty_id = ?", filter.difficulty);
+    if (filter?.season) add("t.season_id = ?", filter.season);
+    if (filter?.minDays) add("t.duration_days >= ?", filter.minDays);
+    if (filter?.maxDays) add("t.duration_days <= ?", filter.maxDays);
     const sql = `SELECT ${TOUR_COLS},
         (SELECT i.image_path FROM tour_images i WHERE i.tour_id = t.tour_id ORDER BY i.sort_order LIMIT 1) AS cover
       FROM tours t
-      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ${where.length ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY t.start_date, t.tour_id`;
     const { rows } = await this.pool.query(sql, params);
     return rows.map(mapTour);
@@ -168,13 +171,23 @@ export class DatabaseFacade {
     );
     if (!rows[0]) return null;
     const tour = mapTour(rows[0]);
-    tour.organizer = { fullName: rows[0].org_name, email: rows[0].org_email, phone: rows[0].org_phone };
+    tour.organizer = {
+      fullName: rows[0].org_name,
+      email: rows[0].org_email,
+      phone: rows[0].org_phone,
+    };
     const imgs = await this.pool.query(
       `SELECT image_id, tour_id, image_path, sort_order FROM tour_images WHERE tour_id = $1 ORDER BY sort_order`,
       [id],
     );
     tour.images = imgs.rows.map(
-      (r) => new TourImage({ id: num(r.image_id), tourId: num(r.tour_id), imagePath: r.image_path, sortOrder: num(r.sort_order) }),
+      (r) =>
+        new TourImage({
+          id: num(r.image_id),
+          tourId: num(r.tour_id),
+          imagePath: r.image_path,
+          sortOrder: num(r.sort_order),
+        }),
     );
     tour.cover = tour.images[0]?.imagePath ?? null;
     return tour;
@@ -190,13 +203,21 @@ export class DatabaseFacade {
     return rows.map(mapTour);
   }
 
-  /** Создаёт тур вместе с изображениями в одной транзакции; возвращает id тура. */
   async createTour(tour) {
     return this.#tx(async (c) => {
       const { rows } = await c.query(
         `INSERT INTO tours (admin_id, difficulty_id, season_id, title, description, price, start_date, duration_days)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING tour_id`,
-        [tour.adminId, tour.difficulty, tour.season, tour.title, tour.description, tour.price, tour.startDate, tour.durationDays],
+        [
+          tour.adminId,
+          tour.difficulty,
+          tour.season,
+          tour.title,
+          tour.description,
+          tour.price,
+          tour.startDate,
+          tour.durationDays,
+        ],
       );
       const id = num(rows[0].tour_id);
       await this.#insertImages(c, id, tour.images);
@@ -204,16 +225,24 @@ export class DatabaseFacade {
     });
   }
 
-  /** Обновляет тур и полностью заменяет набор его изображений (в одной транзакции). */
   async updateTour(tour) {
     await this.#tx(async (c) => {
       await c.query(
         `UPDATE tours SET difficulty_id = $2, season_id = $3, title = $4, description = $5,
                 price = $6, start_date = $7, duration_days = $8
          WHERE tour_id = $1`,
-        [tour.id, tour.difficulty, tour.season, tour.title, tour.description, tour.price, tour.startDate, tour.durationDays],
+        [
+          tour.id,
+          tour.difficulty,
+          tour.season,
+          tour.title,
+          tour.description,
+          tour.price,
+          tour.startDate,
+          tour.durationDays,
+        ],
       );
-      await c.query('DELETE FROM tour_images WHERE tour_id = $1', [tour.id]);
+      await c.query("DELETE FROM tour_images WHERE tour_id = $1", [tour.id]);
       await this.#insertImages(c, tour.id, tour.images);
     });
   }
@@ -221,15 +250,13 @@ export class DatabaseFacade {
   async #insertImages(client, tourId, images) {
     let order = 1;
     for (const img of images ?? []) {
-      await client.query(`INSERT INTO tour_images (tour_id, image_path, sort_order) VALUES ($1, $2, $3)`, [
-        tourId,
-        img.imagePath,
-        order++,
-      ]);
+      await client.query(
+        `INSERT INTO tour_images (tour_id, image_path, sort_order) VALUES ($1, $2, $3)`,
+        [tourId, img.imagePath, order++],
+      );
     }
   }
 
-  // ---------------------------------------------------------------- заявки
   async createBooking(booking) {
     const { rows } = await this.pool.query(
       `INSERT INTO bookings (user_id, tour_id, status_id) VALUES ($1, $2, $3) RETURNING booking_id`,
@@ -239,7 +266,10 @@ export class DatabaseFacade {
   }
 
   async getBookingById(id) {
-    const { rows } = await this.pool.query(`${BOOKING_SELECT} WHERE b.booking_id = $1`, [id]);
+    const { rows } = await this.pool.query(
+      `${BOOKING_SELECT} WHERE b.booking_id = $1`,
+      [id],
+    );
     return rows[0] ? mapBooking(rows[0]) : null;
   }
 
